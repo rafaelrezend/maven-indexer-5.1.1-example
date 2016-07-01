@@ -26,6 +26,7 @@ import org.apache.lucene.search.Query;
 import org.apache.maven.index.ArtifactInfo;
 import org.apache.maven.index.ArtifactInfoFilter;
 import org.apache.maven.index.ArtifactInfoGroup;
+import org.apache.maven.index.Field;
 import org.apache.maven.index.FlatSearchRequest;
 import org.apache.maven.index.FlatSearchResponse;
 import org.apache.maven.index.GroupedSearchRequest;
@@ -76,7 +77,16 @@ public class BasicUsageExample
         final BasicUsageExample basicUsageExample = new BasicUsageExample();
         basicUsageExample.perform();
     }
-
+    
+    // Server configuration
+    private static final String REPOSITORY_URL = "https://repo.jenkins-ci.org/releases/";
+    
+    // Search parameters
+    private static final String GROUP_ID = "org.jenkins-ci.plugins";
+    private static final String ARTIFACT_ID = "timestamper";
+    private static final String MIN_VERSION = "1.8.2";
+    private static final String PACKAGING = "hpi";
+    
     // ==
 
     private final PlexusContainer plexusContainer;
@@ -125,7 +135,7 @@ public class BasicUsageExample
         // Create context for central repository index
         centralContext =
             indexer.createIndexingContext( "myrepo", "myrepo", centralLocalCache, centralIndexDir,
-                                           "http://localhost:8280/nexus/repository/myrepo/", null, true, true, indexers );
+                                           REPOSITORY_URL, null, true, true, indexers );
 
         // Update the index (incremental update will happen if this is not 1st run and files are not deleted)
         // This whole block below should not be executed on every app start, but rather controlled by some configuration
@@ -136,13 +146,14 @@ public class BasicUsageExample
         {
             System.out.println( "Updating Index..." );
             System.out.println( "This might take a while on first run, so please be patient!" );
+            
             // Create ResourceFetcher implementation to be used with IndexUpdateRequest
             // Here, we use Wagon based one as shorthand, but all we need is a ResourceFetcher implementation
             TransferListener listener = new AbstractTransferListener()
             {
                 public void transferStarted( TransferEvent transferEvent )
                 {
-                    System.out.print( "  Downloading " + transferEvent.getResource().getName() );
+                    System.out.print( "  Downloading " + transferEvent.getResource().getName());
                 }
 
                 public void transferProgress( TransferEvent transferEvent, byte[] buffer, int length )
@@ -155,10 +166,13 @@ public class BasicUsageExample
                 }
             };
             ResourceFetcher resourceFetcher = new WagonHelper.WagonFetcher( httpWagon, listener, null, null );
+            
 
             Date centralContextCurrentTimestamp = centralContext.getTimestamp();
+            
             IndexUpdateRequest updateRequest = new IndexUpdateRequest( centralContext, resourceFetcher );
             IndexUpdateResult updateResult = indexUpdater.fetchAndUpdateIndex( updateRequest );
+            
             if ( updateResult.isFullUpdate() )
             {
                 System.out.println( "Full update happened!" );
@@ -186,27 +200,31 @@ public class BasicUsageExample
         // Case:
         // Search for all GAVs with known G and A and having version greater than V
 
-        final GenericVersionScheme versionScheme = new GenericVersionScheme();
-        final String versionString = "0.0.1";
-        final Version version = versionScheme.parseVersion( versionString );
-
-        // construct the query for known GA
-        final Query groupIdQ =
-            indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( "com.sample.plugins" ) );
-//        final Query artifactIdQ =
-//            indexer.constructQuery( MAVEN.ARTIFACT_ID, new SourcedSearchExpression( "nexus-api" ) );
         final BooleanQuery query = new BooleanQuery();
+        
+        // construct the query for known GA
+        System.out.println("Query : GroupId must be " + GROUP_ID);
+        final Query groupIdQ = indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( GROUP_ID ) );
         query.add( groupIdQ, Occur.MUST );
-//        query.add( artifactIdQ, Occur.MUST );
+        
+        System.out.println("Query : ArtifactId must be " + ARTIFACT_ID);
+        final Query artifactIdQ = indexer.constructQuery( MAVEN.ARTIFACT_ID, new SourcedSearchExpression( ARTIFACT_ID ) );
+        query.add( artifactIdQ, Occur.MUST );
 
-        // we want "jar" artifacts only
-//        query.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( "jar" ) ), Occur.MUST );
-        // we want main artifacts only (no classifier)
-        // Note: this below is unfinished API, needs fixing
-//        query.add( indexer.constructQuery( MAVEN.CLASSIFIER, new SourcedSearchExpression( Field.NOT_PRESENT ) ),
-//                   Occur.MUST_NOT );
+        // query for specific packaging
+        System.out.println("Query : Packaging must be " + PACKAGING);
+        query.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( PACKAGING ) ), Occur.MUST );
+        
+        // query for artifacts only (no classifier)
+        System.out.println("Query : Artifacts only (no classifier)");
+        query.add( indexer.constructQuery( MAVEN.CLASSIFIER, new SourcedSearchExpression( Field.NOT_PRESENT ) ), Occur.MUST_NOT );
 
+        
         // construct the filter to express "V greater than"
+        System.out.println("Query : Version greater than " + MIN_VERSION);
+        final GenericVersionScheme versionScheme = new GenericVersionScheme();
+        final Version version = versionScheme.parseVersion( MIN_VERSION );
+
         final ArtifactInfoFilter versionFilter = new ArtifactInfoFilter()
         {
             public boolean accepts( final IndexingContext ctx, final ArtifactInfo ai )
@@ -225,11 +243,12 @@ public class BasicUsageExample
             }
         };
 
-        System.out.println(
-            "Searching for all GAVs with G=com.sample.plugins and having V greater than 0.0.1" );
+		System.out.println("Searching with Query...");
         final IteratorSearchRequest request =
             new IteratorSearchRequest( query, Collections.singletonList( centralContext ), versionFilter );
         final IteratorSearchResponse response = indexer.searchIterator( request );
+        
+        System.out.println("\nResults:");
         for ( ArtifactInfo ai : response )
         {
             System.out.println( ai.toString() );
@@ -238,24 +257,7 @@ public class BasicUsageExample
         // Case:
         // Use index
         // Searching for some artifact
-        Query gidQ =
-            indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( "org.apache.maven.indexer" ) );
-        Query aidQ = indexer.constructQuery( MAVEN.ARTIFACT_ID, new SourcedSearchExpression( "indexer-artifact" ) );
-
         BooleanQuery bq = new BooleanQuery();
-        bq.add( gidQ, Occur.MUST );
-        bq.add( aidQ, Occur.MUST );
-
-        searchAndDump( indexer, "all artifacts under GA org.apache.maven.indexer:indexer-artifact", bq );
-
-        // Searching for some main artifact
-        bq = new BooleanQuery();
-        bq.add( gidQ, Occur.MUST );
-        bq.add( aidQ, Occur.MUST );
-        // bq.add( nexusIndexer.constructQuery( MAVEN.CLASSIFIER, new SourcedSearchExpression( "*" ) ), Occur.MUST_NOT
-        // );
-
-        searchAndDump( indexer, "main artifacts under GA org.apache.maven.indexer:indexer-artifact", bq );
 
         // doing sha1 search
         searchAndDump( indexer, "SHA1 7ab67e6b20e5332a7fb4fdf2f019aec4275846c2", indexer.constructQuery( MAVEN.SHA1,
@@ -272,8 +274,8 @@ public class BasicUsageExample
 
         // doing search for all "canonical" maven plugins latest versions
         bq = new BooleanQuery();
-        bq.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( "maven-plugin" ) ), Occur.MUST );
-        bq.add( indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( "org.apache.maven.plugins" ) ),
+        bq.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( PACKAGING ) ), Occur.MUST );
+        bq.add( indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( GROUP_ID ) ),
                 Occur.MUST );
         searchGroupedAndDump( indexer, "all \"canonical\" maven plugins", bq, new GAGrouping() );
 
