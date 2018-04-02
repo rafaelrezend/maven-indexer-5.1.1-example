@@ -22,16 +22,14 @@ package org.apache.maven.indexer.example;
 //import org.apache.lucene.index.MultiFields;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.Query;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.factory.ArtifactFactory;
+import org.apache.maven.artifact.repository.ArtifactRepository;
+import org.apache.maven.artifact.resolver.ArtifactResolutionRequest;
+import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
+import org.apache.maven.artifact.resolver.ArtifactResolver;
 import org.apache.maven.index.ArtifactInfo;
-import org.apache.maven.index.ArtifactInfoFilter;
-import org.apache.maven.index.ArtifactInfoGroup;
 import org.apache.maven.index.Field;
-import org.apache.maven.index.FlatSearchRequest;
-import org.apache.maven.index.FlatSearchResponse;
-import org.apache.maven.index.GroupedSearchRequest;
-import org.apache.maven.index.GroupedSearchResponse;
-import org.apache.maven.index.Grouping;
 import org.apache.maven.index.Indexer;
 import org.apache.maven.index.IteratorSearchRequest;
 import org.apache.maven.index.IteratorSearchResponse;
@@ -39,13 +37,12 @@ import org.apache.maven.index.MAVEN;
 import org.apache.maven.index.context.IndexCreator;
 import org.apache.maven.index.context.IndexingContext;
 import org.apache.maven.index.expr.SourcedSearchExpression;
-import org.apache.maven.index.expr.UserInputSearchExpression;
-import org.apache.maven.index.search.grouping.GAGrouping;
 import org.apache.maven.index.updater.IndexUpdateRequest;
 import org.apache.maven.index.updater.IndexUpdateResult;
 import org.apache.maven.index.updater.IndexUpdater;
 import org.apache.maven.index.updater.ResourceFetcher;
 import org.apache.maven.index.updater.WagonHelper;
+import org.apache.maven.repository.RepositorySystem;
 import org.apache.maven.wagon.Wagon;
 import org.apache.maven.wagon.events.TransferEvent;
 import org.apache.maven.wagon.events.TransferListener;
@@ -56,18 +53,18 @@ import org.codehaus.plexus.PlexusConstants;
 import org.codehaus.plexus.PlexusContainer;
 import org.codehaus.plexus.PlexusContainerException;
 import org.codehaus.plexus.component.repository.exception.ComponentLookupException;
-import org.codehaus.plexus.util.StringUtils;
-import org.eclipse.aether.util.version.GenericVersionScheme;
 import org.eclipse.aether.version.InvalidVersionSpecificationException;
-import org.eclipse.aether.version.Version;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 
 public class BasicUsageExample
 {
@@ -79,7 +76,8 @@ public class BasicUsageExample
     }
     
     // Server configuration
-    private static final String REPOSITORY_URL = "https://repo.jenkins-ci.org/releases/";
+    private static final String REPOSITORY_URL = "http://localhost:9292/content/repositories/jenkins-releases/";
+//    private static final String REPOSITORY_URL = "https://repo.jenkins-ci.org/releases/";
     
     // Search parameters
     private static final String GROUP_ID = "org.jenkins-ci.plugins";
@@ -98,6 +96,9 @@ public class BasicUsageExample
     private final Wagon httpWagon;
 
     private IndexingContext centralContext;
+    
+    private RepositorySystem repositorySystem;
+    private ArtifactResolver artifactResolver;
 
     public BasicUsageExample()
         throws PlexusContainerException, ComponentLookupException
@@ -116,6 +117,16 @@ public class BasicUsageExample
         this.indexUpdater = plexusContainer.lookup( IndexUpdater.class );
         // lookup wagon used to remotely fetch index
         this.httpWagon = plexusContainer.lookup( Wagon.class, "http" );
+        
+        this.repositorySystem = plexusContainer.lookup(RepositorySystem.class);
+        this.artifactResolver = plexusContainer.lookup(ArtifactResolver.class);
+        
+        if (artifactResolver == null) System.out.println("#+#+#+# artifactResolver is null");
+        else System.out.println("#+#+#+# artifactResolver is NOT null");
+        
+        if (repositorySystem == null) System.out.println("#+#+#+# repositorySystem is null");
+        else System.out.println("#+#+#+# repositorySystem is NOT null");
+        
 
     }
 
@@ -130,7 +141,7 @@ public class BasicUsageExample
         List<IndexCreator> indexers = new ArrayList<IndexCreator>();
         indexers.add( plexusContainer.lookup( IndexCreator.class, "min" ) );
         indexers.add( plexusContainer.lookup( IndexCreator.class, "jarContent" ) );
-        indexers.add( plexusContainer.lookup( IndexCreator.class, "maven-plugin" ) );
+//        indexers.add( plexusContainer.lookup( IndexCreator.class, "maven-plugin" ) );
 
         // Create context for central repository index
         centralContext =
@@ -151,17 +162,14 @@ public class BasicUsageExample
             // Here, we use Wagon based one as shorthand, but all we need is a ResourceFetcher implementation
             TransferListener listener = new AbstractTransferListener()
             {
-                public void transferStarted( TransferEvent transferEvent )
-                {
+                public void transferStarted( TransferEvent transferEvent ) {
                     System.out.print( "  Downloading " + transferEvent.getResource().getName());
                 }
 
-                public void transferProgress( TransferEvent transferEvent, byte[] buffer, int length )
-                {
+                public void transferProgress( TransferEvent transferEvent, byte[] buffer, int length ) {
                 }
 
-                public void transferCompleted( TransferEvent transferEvent )
-                {
+                public void transferCompleted( TransferEvent transferEvent ) {
                     System.out.println( " - Done" );
                 }
             };
@@ -188,16 +196,6 @@ public class BasicUsageExample
         // Search for all GAVs with known G and A and having version greater than V
 
         final BooleanQuery query = new BooleanQuery();
-        
-        // construct the query for known GA
-        System.out.println("Query : GroupId must be " + GROUP_ID);
-        final Query groupIdQ = indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( GROUP_ID ) );
-        query.add( groupIdQ, Occur.MUST );
-        
-        System.out.println("Query : ArtifactId must be " + ARTIFACT_ID);
-        final Query artifactIdQ = indexer.constructQuery( MAVEN.ARTIFACT_ID, new SourcedSearchExpression( ARTIFACT_ID ) );
-        query.add( artifactIdQ, Occur.MUST );
-
         // query for specific packaging
         System.out.println("Query : Packaging must be " + PACKAGING);
         query.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( PACKAGING ) ), Occur.MUST );
@@ -205,114 +203,57 @@ public class BasicUsageExample
         // query for artifacts only (no classifier)
         System.out.println("Query : Artifacts only (no classifier)");
         query.add( indexer.constructQuery( MAVEN.CLASSIFIER, new SourcedSearchExpression( Field.NOT_PRESENT ) ), Occur.MUST_NOT );
-
         
-        // construct the filter to express "V greater than"
-        System.out.println("Query : Version greater than " + MIN_VERSION);
-        final GenericVersionScheme versionScheme = new GenericVersionScheme();
-        final Version version = versionScheme.parseVersion( MIN_VERSION );
-
-        final ArtifactInfoFilter versionFilter = new ArtifactInfoFilter()
-        {
-            public boolean accepts( final IndexingContext ctx, final ArtifactInfo ai )
-            {
-                try
-                {
-                    final Version aiV = versionScheme.parseVersion( ai.version );
-                    // Use ">=" if you are INCLUSIVE
-                    return aiV.compareTo( version ) > 0;
-                }
-                catch ( InvalidVersionSpecificationException e )
-                {
-                    // do something here? be safe and include?
-                    return true;
-                }
-            }
-        };
-
 		System.out.println("Searching with Query...");
         final IteratorSearchRequest request =
-            new IteratorSearchRequest( query, Collections.singletonList( centralContext ), versionFilter );
+            new IteratorSearchRequest( query, Collections.singletonList( centralContext ) );
         final IteratorSearchResponse response = indexer.searchIterator( request );
         
         System.out.println("\nResults:");
+        int pluginAmount = 0;
         for ( ArtifactInfo ai : response )
         {
             System.out.println( ai.toString() );
+            pluginAmount++;
+            
+            Iterator<Entry<String, String>> attrs = ai.getAttributes().entrySet().iterator();
+            while (attrs.hasNext()) {
+				Entry<String, String> object = attrs.next();
+				System.out.println("##### : " + object.getKey() + " : " + object.getValue());
+			}
+            
+            Collection<Field> attrscoll = ai.getFields();
+            for (Field field : attrscoll) {
+				System.out.println("+++++ : " + field.toString());
+			}
+            
+            Artifact artifact = this.repositorySystem.createArtifactWithClassifier(ai.groupId, ai.artifactId, ai.version, "pom", null);
+            
+            if (artifact == null) System.out.println("#+#+#+# artifact is null");
+            else System.out.println("#+#+#+# artifact is NOT null");
+            
+            ArtifactResolutionRequest artifactRequest = new ArtifactResolutionRequest().setArtifact(artifact);
+            
+            if (artifactRequest == null) System.out.println("#+#+#+# artifactRequest is null");
+            else System.out.println("#+#+#+# artifactRequest is NOT null");
+            
+            ArtifactResolutionResult artifactResult = this.artifactResolver.resolve(artifactRequest).setRepositories(repositories);
+            
+            if (artifactResult == null) System.out.println("#+#+#+# artifactResult is null");
+            else System.out.println("#+#+#+# artifactResult is NOT null");
+            
+            Set<Artifact> artifactsss = artifactResult.getArtifacts();
+            for (Artifact artifact2 : artifactsss) {
+				System.out.println("++ : " + artifact2.getDownloadUrl());
+			}
+            
+//            ArtifactResolver res = new ...
+//            		how is backend-update-center2 (original and my fork) actually resolving it?
+//            		do we need to download the file? :-(
+            
         }
-
-        // Case:
-        // Use index
-        // Searching for some artifact
-        BooleanQuery bq = new BooleanQuery();
-
-        // doing sha1 search
-        searchAndDump( indexer, "SHA1 7ab67e6b20e5332a7fb4fdf2f019aec4275846c2", indexer.constructQuery( MAVEN.SHA1,
-                                                                                                         new SourcedSearchExpression(
-                                                                                                             "7ab67e6b20e5332a7fb4fdf2f019aec4275846c2" ) ) );
-
-        searchAndDump( indexer, "SHA1 7ab67e6b20 (partial hash)",
-                       indexer.constructQuery( MAVEN.SHA1, new UserInputSearchExpression( "7ab67e6b20" ) ) );
-
-        // doing classname search (incomplete classname)
-        searchAndDump( indexer, "classname DefaultNexusIndexer (note: Central does not publish classes in the index)",
-                       indexer.constructQuery( MAVEN.CLASSNAMES,
-                                               new UserInputSearchExpression( "DefaultNexusIndexer" ) ) );
-
-        // doing search for all "canonical" maven plugins latest versions
-        bq = new BooleanQuery();
-        bq.add( indexer.constructQuery( MAVEN.PACKAGING, new SourcedSearchExpression( PACKAGING ) ), Occur.MUST );
-        bq.add( indexer.constructQuery( MAVEN.GROUP_ID, new SourcedSearchExpression( GROUP_ID ) ),
-                Occur.MUST );
-        searchGroupedAndDump( indexer, "all \"canonical\" maven plugins", bq, new GAGrouping() );
-
-        // doing search for all archetypes latest versions
-        searchGroupedAndDump( indexer, "all maven archetypes (latest versions)",
-                              indexer.constructQuery( MAVEN.PACKAGING,
-                                                      new SourcedSearchExpression( "maven-archetype" ) ),
-                              new GAGrouping() );
-
-        // close cleanly
-        indexer.closeIndexingContext( centralContext, false );
-    }
-
-    public void searchAndDump( Indexer nexusIndexer, String descr, Query q )
-        throws IOException
-    {
-        System.out.println( "Searching for " + descr );
-
-        FlatSearchResponse response = nexusIndexer.searchFlat( new FlatSearchRequest( q, centralContext ) );
-
-        for ( ArtifactInfo ai : response.getResults() )
-        {
-            System.out.println( ai.toString() );
-        }
-
-        System.out.println( "------" );
-        System.out.println( "Total: " + response.getTotalHitsCount() );
+        
         System.out.println();
-    }
-
-    public void searchGroupedAndDump( Indexer nexusIndexer, String descr, Query q, Grouping g )
-        throws IOException
-    {
-        System.out.println( "Searching for " + descr );
-
-        GroupedSearchResponse response = nexusIndexer.searchGrouped( new GroupedSearchRequest( q, g, centralContext ) );
-
-        for ( Map.Entry<String, ArtifactInfoGroup> entry : response.getResults().entrySet() )
-        {
-            ArtifactInfo ai = entry.getValue().getArtifactInfos().iterator().next();
-            System.out.println( "* Entry " + ai );
-            System.out.println( "  Latest version:  " + ai.version );
-            System.out.println( StringUtils.isBlank( ai.description )
-                                    ? "No description in plugin's POM."
-                                    : StringUtils.abbreviate( ai.description, 60 ) );
-            System.out.println();
-        }
-
-        System.out.println( "------" );
-        System.out.println( "Total record hits: " + response.getTotalHitsCount() );
-        System.out.println();
+        System.out.println("Plugins found: " + pluginAmount);
     }
 }
